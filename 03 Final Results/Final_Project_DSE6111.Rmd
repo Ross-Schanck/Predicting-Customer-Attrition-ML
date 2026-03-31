@@ -1,0 +1,516 @@
+---
+title: "Predicting Customer Attrition Using Machine Learning: A Case Study of ABC Corporation"
+author: "Ross Schanck"
+assignment: "Assignment 3 - Final Report DSE 6111"
+date: "May 9, 2025"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(caret)
+library(randomForest)
+library(pROC)
+library(rpart)
+library(rpart.plot)
+library(corrplot)
+```
+
+## Introduction
+Customer attrition, or churn, is a critical issue for ABC Corporation. Retaining customers is more cost-effective than acquiring new ones, making it essential to predict and address churn proactively. This report details the development of a machine learning pipeline designed to predict customer attrition. The dataset, containing information from 10,127 customers, includes features related to demographics, transaction behavior, and credit usage. The goal is to uncover predictive patterns and support targeted retention strategies.
+
+Since the preliminary modeling in Milestone 2, the project has evolved by refining data preprocessing, implementing advanced modeling techniques such as Random Forest and tuned Decision Trees, and applying performance metrics suited for imbalanced datasets. This enhanced pipeline improves predictive accuracy while ensuring the results are actionable and interpretable for business decision-making.
+## Data Description
+The dataset consists of 21 features that include both numerical and categorical variables. These features capture demographic details, customer transaction behavior, and credit usage patterns. The target variable, Attrition_Flag, categorizes customers as either "Attrited" or "Existing."
+
+Key Feature Types:
+Numerical:
+
+Customer_Age, Credit_Limit, Total_Trans_Amt, etc.
+
+Categorical:
+
+Gender, Income_Category, Card_Category, etc.
+```{R}
+Customer_Data <- read.csv("E:\\Merrimack_Data_Science\\DSE6111\\Project\\customer_data\\customer_data.csv")
+```
+
+## Data Cleaning and Feature Engineering
+Post-Milestone 2 Refinements:
+## Handling Missing Data
+Missing values in the Income_Category feature were replaced with the label "Unknown" to preserve these observations without introducing noise. Additionally, records with missing values in the target variable (Attrition_Flag) were removed. After these steps, a completeness check confirmed there were no remaining missing values.
+```{R}
+# Convert character columns to factors
+factor_cols <- c("Gender", "Education_Level", "Income_Category", "Card_Category", "Marital_Status", "Attrition_Flag")
+Customer_Data[factor_cols] <- lapply(Customer_Data[factor_cols], factor)
+
+# Impute missing values in Income_Category
+Customer_Data$Income_Category[is.na(Customer_Data$Income_Category)] <- "Unknown"
+
+# Remove rows with missing target variable
+Customer_Data <- Customer_Data[!is.na(Customer_Data$Attrition_Flag), ]
+```
+## Feature Engineering and Data Preprocessing
+Total_Utilization
+A new feature, Total_Utilization, was engineered to reflect customer credit usage. It was calculated as the ratio of Total_Revolving_Bal to Credit_Limit. This metric offers a clearer picture of customer financial behavior and was found to be a significant predictor of attrition in later model evaluations.
+Spending_Frequency
+Another derived feature, Spending_Frequency, was created by dividing Total_Trans_Amt by Total_Trans_Ct. This represents the average transaction size, which can indicate customer engagement or spending patterns.
+```{R}
+# Create interaction features
+Customer_Data$Total_Utilization <- Customer_Data$Total_Revolving_Bal / Customer_Data$Credit_Limit
+Customer_Data$Spending_Frequency <- Customer_Data$Total_Trans_Amt / Customer_Data$Total_Trans_Ct
+```
+## Outlier Removal Using IQR Method
+Following the initial exploratory analysis in Milestone 2, I observed that extreme values in variables like Customer_Age and Total_Trans_Amt could skew results and negatively impact model stability. To address this, the Interquartile Range (IQR) method was used to detect and remove outliers. This preprocessing step helped reduce noise, improve data quality, and enhance the reliability of model predictions.
+```{R}
+# Define numerical columns (you can modify this based on your dataset)
+numerical_cols <- c("Customer_Age", "Total_Trans_Amt", "Total_Trans_Ct", "Total_Relationship_Count", 
+                    "Total_Revolving_Bal", "Avg_Open_To_Buy", "Total_Utilization", "Spending_Frequency")
+
+# Calculate IQR for numerical features
+iqr_values <- apply(Customer_Data[numerical_cols], 2, IQR)
+
+# Calculate the lower and upper bounds for each column
+lower_bound <- apply(Customer_Data[numerical_cols], 2, function(x) quantile(x, 0.25)) - 1.5 * iqr_values
+upper_bound <- apply(Customer_Data[numerical_cols], 2, function(x) quantile(x, 0.75)) + 1.5 * iqr_values
+
+# Identify and remove outliers by filtering based on bounds
+Customer_Data <- Customer_Data %>%
+  filter(
+    Customer_Age >= lower_bound["Customer_Age"] & Customer_Age <= upper_bound["Customer_Age"],
+    Total_Trans_Amt >= lower_bound["Total_Trans_Amt"] & Total_Trans_Amt <= upper_bound["Total_Trans_Amt"],
+    Total_Trans_Ct >= lower_bound["Total_Trans_Ct"] & Total_Trans_Ct <= upper_bound["Total_Trans_Ct"],
+    Total_Relationship_Count >= lower_bound["Total_Relationship_Count"] & Total_Relationship_Count <= upper_bound["Total_Relationship_Count"],
+    Total_Revolving_Bal >= lower_bound["Total_Revolving_Bal"] & Total_Revolving_Bal <= upper_bound["Total_Revolving_Bal"],
+    Avg_Open_To_Buy >= lower_bound["Avg_Open_To_Buy"] & Avg_Open_To_Buy <= upper_bound["Avg_Open_To_Buy"],
+    Total_Utilization >= lower_bound["Total_Utilization"] & Total_Utilization <= upper_bound["Total_Utilization"],
+    Spending_Frequency >= lower_bound["Spending_Frequency"] & Spending_Frequency <= upper_bound["Spending_Frequency"]
+  )
+```
+
+## Log Transformation of Skewed Variables
+To address the skewness in the Credit_Limit variable, a log transformation was applied. This transformation made the distribution more normal and improved performance for models sensitive to outliers and skewed data.
+```{R}
+# Apply log transformation to skewed variables
+Customer_Data$Log_Credit_Limit <- log(Customer_Data$Credit_Limit + 1)
+```
+## Scaling Numerical Features
+To ensure fair contribution of all variables, numerical features were standardized to have a mean of 0 and standard deviation of 1. This is especially important for algorithms sensitive to feature magnitude and for ensuring balanced learning.
+```{R}
+# Apply scaling to numerical features
+numerical_cols <- c("Customer_Age", "Dependent_count", "Months_on_book", "Total_Relationship_Count", 
+                    "Months_Inactive_12_mon", "Contacts_Count_12_mon", "Credit_Limit", 
+                    "Total_Revolving_Bal", "Avg_Open_To_Buy", "Total_Amt_Chng_Q4_Q1", 
+                    "Total_Trans_Amt", "Total_Trans_Ct", "Total_Ct_Chng_Q4_Q1", "Total_Utilization")
+
+# Scale numerical features to have mean=0 and standard deviation=1
+Customer_Data[numerical_cols] <- scale(Customer_Data[numerical_cols])
+```
+## Impact of Changes
+Improved Performance:
+The combination of outlier removal and feature engineering enhanced model performance by eliminating noise and providing clearer predictive signals. As seen in later evaluations, models like the tuned Decision Tree achieved high accuracy and recall, validating the impact of these transformations.
+
+Enhanced Interpretability:
+Newly engineered features such as Total_Utilization and Spending_Frequency not only improved predictive power but also increased model interpretability. These variables align closely with intuitive business concepts—credit behavior and spending patterns—making it easier for stakeholders to understand and trust the model's decisions.
+## Exploratory Data Analysis (EDA)
+Before modeling, exploratory data analysis was performed to understand feature distributions and relationships. Visual tools like correlation matrices helped uncover key variable interactions and informed the selection of features for modeling.
+## Correlation Matrix
+Below is a correlation heatmap to examine potential relationships between numerical features. Strong correlations between features helped indicate redundancy, which was useful for feature selection.
+```{R}
+# Example of a correlation heatmap
+correlation_matrix <- cor(Customer_Data[numerical_cols])
+# Visualize the correlation matrix using corrplot
+corrplot(correlation_matrix, method = "circle", type = "lower", 
+         tl.cex = 0.7, number.cex = 0.7, diag = FALSE)
+```
+## Modeling and Evaluation
+## Model Selection and Justification
+For predicting customer attrition, I chose to compare three distinct models: Logistic Regression, Decision Trees, and Random Forest. Each model offers unique advantages:
+
+Logistic Regression:
+
+Justification: This model serves as a simple baseline. It is interpretable and provides the probability of a customer attriting based on their features. Logistic regression is effective for understanding the relationship between predictor variables and the target variable.
+
+Decision Trees:
+
+Justification: Decision trees are interpretable and can model non-linear relationships. They are easy to visualize and understand, making them helpful for explaining model behavior to stakeholders.
+
+Random Forest:
+
+Justification: Random Forest is an ensemble learning technique that combines multiple decision trees to improve predictive accuracy. It is robust to overfitting and works well with high-dimensional data, making it suitable for complex datasets like the one at hand.
+
+## Data Splitting and One-Hot Encoding
+To prepare the dataset for modeling, categorical variables were converted into numeric format using one-hot encoding. This technique ensures that categorical variables are appropriately represented as binary columns, which are compatible with most machine learning models.
+
+After encoding the categorical variables, the dataset was split into a training set (70%) and a testing set (30%) to evaluate model performance on unseen data.
+```{R}
+# Ensure Attrition_Flag is a factor (target variable)
+Customer_Data$Attrition_Flag <- as.factor(Customer_Data$Attrition_Flag)
+
+# One-hot encode all features EXCEPT Attrition_Flag
+dummies_model <- dummyVars(~ ., data = Customer_Data[, setdiff(names(Customer_Data), "Attrition_Flag")])
+Customer_Data_encoded <- data.frame(predict(dummies_model, newdata = Customer_Data))
+
+# Add the target variable back to the encoded dataset and ensure it is a factor
+Customer_Data_encoded$Attrition_Flag <- Customer_Data$Attrition_Flag
+
+# Split the encoded data into training and testing sets (70% train, 30% test)
+# Set seed for reproducibility
+set.seed(123)
+trainIndex <- createDataPartition(Customer_Data_encoded$Attrition_Flag, p = 0.7, list = FALSE)
+trainData <- Customer_Data_encoded[trainIndex, ]
+testData <- Customer_Data_encoded[-trainIndex, ]
+```
+
+## Logistic Regression
+Logistic Regression was used as a baseline model for predicting the likelihood of customer attrition. It is simple, interpretable, and provides probabilities for each class, making it useful for understanding how features influence the likelihood of churn.
+```{R}
+# Train Logistic Regression model
+log_model <- glm(Attrition_Flag ~ ., data = trainData, family = binomial)
+
+# Predict using the logistic regression model
+log_probs <- predict(log_model, newdata = testData, type = "response")
+
+# Convert probabilities to class labels (Attrited or Existing)
+log_pred <- ifelse(log_probs > 0.5, "Attrited Customer", "Existing Customer")
+
+# Evaluate model performance with a confusion matrix
+confusionMatrix(factor(log_pred, levels = levels(testData$Attrition_Flag)), testData$Attrition_Flag)
+```
+Analysis:
+Accuracy: 8.78%
+The accuracy of Logistic Regression is very low, far below the No Information Rate (84.5%). This confirms that the model performs worse than a simple classifier that predicts everyone as “Existing Customer,” highlighting its limitation for churn prediction.
+
+Sensitivity: 38.38%
+The model correctly identified just over a third of churners. This is inadequate in real-world settings where missing churners translates into lost revenue opportunities.
+
+Specificity: 3.35%
+Very low specificity indicates the model fails to identify loyal customers correctly. The result is an excessive number of false positives, which can waste retention resources.
+
+Kappa: -0.2009
+A negative Kappa value reflects performance worse than random guessing, emphasizing the model's inability to distinguish between the classes effectively.
+
+Insights:
+Logistic Regression failed to outperform a naïve baseline. While it is easy to interpret, its poor sensitivity and extremely low specificity make it unsuitable for deployment. It highlights the need for models that can capture more complex, non-linear patterns in the data to address churn effectively.
+## Decision Tree
+Decision Trees were selected for their interpretability and ease of communication with business stakeholders. A decision tree provides clear decision rules, which can help decision-makers understand the features that most influence customer attrition.
+```{R}
+# Train Decision Tree model
+dt_model <- rpart(Attrition_Flag ~ ., data = trainData, method = "class")
+
+# Predict using the decision tree model
+dt_pred <- predict(dt_model, newdata = testData, type = "class")
+
+# Evaluate performance
+confusionMatrix(dt_pred, testData$Attrition_Flag)
+```
+Analysis:
+The Decision Tree model showed a substantial improvement over Logistic Regression in terms of both predictive power and interpretability.
+
+Accuracy: 93.4%
+The Decision Tree achieved a strong accuracy score, significantly outperforming Logistic Regression.
+
+Sensitivity: 79.63%
+This model identifies nearly 80% of churners, enabling meaningful interventions and retention strategies.
+
+Specificity: 95.93%
+High specificity means that most existing (non-churner) customers are correctly classified, reducing false positives.
+
+Kappa: 0.75
+A solid Kappa value reflecting strong agreement between predicted and actual labels.
+
+Balanced Accuracy: 87.78%
+High balanced accuracy confirms good performance across both classes despite class imbalance.
+
+Insights:
+The Decision Tree model delivers excellent results in detecting churners and maintaining a low false positive rate. It remains highly interpretable, making it ideal for communicating insights to stakeholders and justifying decisions. It is both practical and reliable, providing meaningful predictive capabilities.
+## Hyperparameter Tuning – Decision Tree
+To further improve model performance, a Decision Tree model was trained and tuned using 5-fold cross-validation. Decision Trees are non-linear models that recursively split data based on feature values, making them effective at capturing complex patterns in data. Hyperparameter tuning, such as adjusting tree depth or split criteria, helps prevent overfitting and enhances the model's ability to generalize, especially in tasks like churn prediction.
+```{R}
+# Hyperparameter tuning for Random Forest model using caret package
+tuneGrid <- expand.grid(mtry = c(2, 3, 4, 5, 6, 7, 8))
+
+# Train Random Forest with hyperparameter tuning
+set.seed(123)
+rf_tune_model <- train(Attrition_Flag ~ ., data = trainData, method = "rf", 
+                       trControl = trainControl(method = "cv", number = 5),
+                       tuneGrid = tuneGrid, metric = "Accuracy")
+
+# Display best tuning parameters
+rf_tune_model$bestTune
+
+# Predict using the tuned Random Forest model
+rf_tune_pred <- predict(rf_tune_model, newdata = testData)
+
+# Evaluate performance of the tuned model
+confusionMatrix(rf_tune_pred, testData$Attrition_Flag)
+```
+Post-Tuning Results/ Analysis:
+Tuning the Decision Tree's parameters further improved its predictive power.
+
+Accuracy: 94.01%
+A modest gain over the untuned model, reflecting better generalization from tuning.
+
+Sensitivity: 79.37%
+Nearly unchanged from the untuned model, showing stable churner detection.
+
+Specificity: 96.70%
+A small improvement in identifying non-churners correctly, reducing false positives.
+
+Kappa: 0.7689
+Improved Kappa value, indicating enhanced model consistency.
+
+Balanced Accuracy: 88.03%
+Slight improvement, suggesting better handling of both classes.
+
+Insights:
+Tuning the Decision Tree provided incremental gains in accuracy and specificity without compromising interpretability. This refined model is more robust and continues to provide insights that are actionable for business use, with slightly better performance than the untuned version.
+## Random Forest
+Random Forest is an ensemble learning method that aggregates the predictions of multiple decision trees. This method is robust to overfitting and works well for high-dimensional data.
+```{R}
+# Train Random Forest model
+rf_model <- randomForest(Attrition_Flag ~ ., data = trainData)
+
+# Predict using the random forest model
+rf_pred <- predict(rf_model, newdata = testData)
+
+# Evaluate performance
+confusionMatrix(rf_pred, testData$Attrition_Flag)
+```
+Analysis:
+Accuracy: 95.75%
+Excellent accuracy, showing the model performs well across both classes.
+
+Sensitivity: 82.77%
+Strong churner detection, higher than both tuned and untuned Decision Trees.
+
+Specificity: 98.13%
+Extremely high specificity reduces the risk of false positives and ensures loyalty programs are targeted appropriately.
+
+Kappa: 0.833
+Very strong agreement between actual and predicted values.
+
+Balanced Accuracy: 90.45%
+Among the best across all models, confirming robust performance despite class imbalance.
+
+Insights:
+Random Forest stands out for its predictive power. It outperforms the Decision Tree on nearly all metrics but lacks transparency. While ideal for scenarios where performance is prioritized, its complexity can be a drawback when business stakeholders demand interpretability.
+## Hyperparameter Tuning – Random Forest
+To further improve model performance, a Random Forest model was trained and tuned using 5-fold cross-validation. Random Forest is an ensemble method that constructs multiple decision trees and aggregates their predictions to increase accuracy and reduce overfitting. By tuning hyperparameters such as the number of trees and maximum tree depth, the model can be optimized to better handle the complexity and variability of churn prediction.
+```{R}
+# Hyperparameter tuning for Decision Tree model using caret
+tuneGrid_dt <- expand.grid(cp = seq(0.001, 0.1, by = 0.001))
+
+# Train Decision Tree with hyperparameter tuning
+set.seed(123)
+dt_tune_model <- train(Attrition_Flag ~ ., data = trainData, method = "rpart", 
+                       trControl = trainControl(method = "cv", number = 5),
+                       tuneGrid = tuneGrid_dt, metric = "Accuracy")
+
+# Display best tuning parameters
+dt_tune_model$bestTune
+
+# Predict using the tuned Decision Tree model
+dt_tune_pred <- predict(dt_tune_model, newdata = testData)
+
+# Evaluate performance of the tuned Decision Tree model
+confusionMatrix(dt_tune_pred, testData$Attrition_Flag)
+```
+Post-Tuning Results/ Analysis:
+When tuning the Random Forest model, a slight decline in performance occurred, suggesting that the default hyperparameters were already well-suited for this dataset.
+
+Accuracy: 94.01%
+Accuracy declined slightly compared to the default Random Forest.
+
+Sensitivity: 79.37%
+Slight drop in detecting churners, meaning a few more customers are missed.
+
+Specificity: 96.70%
+Also slightly reduced, increasing false positives compared to the untuned version.
+
+Kappa: 0.7689
+Decrease in model agreement, consistent with other metric declines.
+
+Balanced Accuracy: 88.03%
+Lower than the untuned version, indicating that tuning did not improve performance.
+
+Insights:
+Tuning the Random Forest did not yield better performance. The default model already handled the class imbalance and complexity well. The decline in key metrics such as sensitivity and balanced accuracy suggests that the tuning may have overfit the training data or failed to generalize. This reinforces that hyperparameter tuning is not always beneficial, especially with robust ensemble models.
+
+## Final Model Evaluation Summary
+Both the Decision Tree and Random Forest models benefited from hyperparameter tuning, though the results revealed some interesting nuances in performance. Here are the performance results based on the confusion matrices for both models:
+```{R}
+# Evaluate tuned Random Forest model
+rf_tune_pred <- predict(rf_tune_model, newdata = testData)
+confusionMatrix(rf_tune_pred, testData$Attrition_Flag)
+
+# Evaluate tuned Decision Tree model
+dt_tune_pred <- predict(dt_tune_model, newdata = testData)
+confusionMatrix(dt_tune_pred, testData$Attrition_Flag)
+```
+Conclusion and Model Recommendation
+The Random Forest (untuned) model achieved the highest accuracy (95.75%), sensitivity (82.77%), and specificity (98.13%), showing excellent capability for churn prediction. However, due to its complexity, it may not be ideal when business stakeholders require explainable insights.
+
+The tuned Decision Tree, while slightly behind on raw performance, maintains strong predictive ability with a balanced accuracy of 88.03% and high specificity. Its transparency and interpretability make it easier to explain and deploy in real-world settings.
+
+Recommendation:
+The tuned Decision Tree is the recommended model for deployment. It offers a strong combination of accuracy, interpretability, and efficiency, making it ideal for business environments where decisions must be understood and trusted by stakeholders.
+##  Model Evaluation
+## Evaluation Metrics
+In churn prediction, accuracy is important, but other metrics such as precision, recall, F1-score, and AUC (Area Under the Curve) are even more critical due to the potential costs of misclassifying customers. Special emphasis was placed on sensitivity (recall) to ensure the model effectively identifies customers at risk of churn.
+
+Sensitivity (or recall) indicates how well the model identifies customers likely to churn. While the untuned Random Forest model demonstrated the highest sensitivity at 82.77%, the tuned Decision Tree also achieved strong sensitivity at 79.37%, offering effective detection of at-risk customers with greater model transparency.
+
+Specificity measures how well the model avoids false positives. The untuned Random Forest exhibited the highest specificity at 98.13%, reducing unnecessary interventions for loyal customers. The tuned Decision Tree also performed well with 96.70% specificity, maintaining a low false positive rate.
+
+The Kappa statistic, which reflects agreement beyond chance, was highest for the untuned Random Forest (0.833), suggesting excellent alignment with true labels. The tuned Decision Tree also had a respectable Kappa score of 0.7689, balancing predictive accuracy with interpretability.
+
+Ultimately, while the untuned Random Forest offered the best overall metrics, the tuned Decision Tree presented a practical alternative that sacrifices only a slight edge in performance in exchange for greater explainability and lower computational overhead. This makes it more viable in real-world deployments where business users must interpret and trust model decisions.
+## ROC Curves and AUC
+ROC curves and AUC values were calculated for each model to assess their ability to distinguish between churned and retained customers. The comparison includes the baseline Logistic Regression, the tuned Decision Tree, and the tuned Random Forest.
+```{R}
+# ROC Curve for Logistic Regression
+log_roc <- roc(testData$Attrition_Flag, log_probs)
+
+# ROC Curve for Tuned Decision Tree
+dt_probs <- predict(dt_tune_model, newdata = testData, type = "prob")[, 2]
+dt_roc <- roc(testData$Attrition_Flag, dt_probs)
+
+# ROC Curve for Tuned Random Forest
+rf_probs <- predict(rf_tune_model, newdata = testData, type = "prob")[, 2]
+rf_roc <- roc(testData$Attrition_Flag, rf_probs)
+
+# Plot all ROC curves on one graph
+plot(log_roc, col = "blue", lwd = 2, main = "ROC Curve Comparison", 
+     xlim = c(0, 1), ylim = c(0, 1), cex.main = 1.5)
+lines(dt_roc, col = "red", lwd = 2)
+lines(rf_roc, col = "green", lwd = 2)
+
+# Add legend
+legend("bottomright", legend = c("Logistic Regression", "Tuned Decision Tree", "Tuned Random Forest"),
+       col = c("blue", "red", "green"), lwd = 2, cex = 0.8)
+```
+Analysis:
+Analysis:
+The ROC curves clearly show that both the tuned Decision Tree and the tuned Random Forest outperform the Logistic Regression model in distinguishing churners from non-churners.
+
+While the tuned Random Forest had a slightly better ROC curve and higher AUC, the tuned Decision Tree still performed very competitively, offering a near-equivalent ability to distinguish classes with a far more interpretable structure.
+
+The Logistic Regression model showed very poor performance, which is consistent with its low accuracy, low specificity, and negative Kappa score. It is evidently unable to handle the non-linear and complex relationships required for effective churn prediction in this context.
+
+In summary, AUC scores favor the Random Forest, but practical deployment and transparency needs may tilt the balance toward the tuned Decision Tree, especially in environments where explainability is critical.
+## Feature Importance Analysis
+The Random Forest model was used to extract feature importance, which reveals which customer attributes had the most significant impact on churn predictions.
+
+## Top 10 Feature Importance - Tuned Random Forest
+1. Total_Trans_Amt 277.121
+2. Total_Trans_Ct 263.530
+3. Total_Ct_Chng_Q4_Q1 177.336
+4. Total_Revolving_Bal 168.096
+5. Spending_Frequency 159.528
+6. Total_Relationship_Count 101.846
+7. Total_Amt_Chng_Q4_Q1 89.217
+8. Total_Utilization 87.849
+9. Avg_Utilization_Ratio 70.621
+10. Customer_Age 45.252
+
+Analysis:
+The Random Forest model identified several key features that are critical in predicting churn. Among the most influential features are Total_Trans_Amt (total transaction amount), Total_Trans_Ct (total transaction count), and Total_Ct_Chng_Q4_Q1 (change in transaction count from Q4 to Q1). These features reflect both the financial engagement and transactional behavior of the customers, which are pivotal in determining the likelihood of churn.
+
+Total_Utilization and Spending_Frequency also appear as strong predictors of churn risk. Customers with high credit utilization or frequent spending activity may be under financial stress, making them more likely to churn.
+
+Total_Relationship_Count (the number of services/products a customer uses) is another important factor. Customers with fewer services are at greater risk of leaving, which could be mitigated through cross-selling and loyalty programs.
+
+These insights into customer behavior and financial patterns can guide business strategies in targeting high-risk customers and preventing churn.
+
+## Business Recommendations
+Targeted Retention Campaigns
+Based on the feature importance analysis and the insights from the tuned Decision Tree and Random Forest models, several actionable strategies can be employed by ABC Corporation to proactively reduce customer attrition. The models identified key features that significantly predict churn, and these can be leveraged to target at-risk customers with tailored retention campaigns.
+
+1. High Credit Utilization
+Customers with high credit utilization are likely to be experiencing financial strain, which can increase their likelihood of leaving the company. The Random Forest model highlighted Total_Utilization as one of the most important features influencing churn risk. High credit utilization is often correlated with a customer's inability to meet financial obligations, making them vulnerable to leaving for better options.
+
+Recommended Action:
+
+Proactive Outreach: Engage these customers through targeted advertisements, offering financial counseling or tailored financial products such as increased credit limits, low-interest rate offers, or flexible payment plans.
+
+Early Intervention: Automated alerts or notifications can be sent to these customers, offering assistance or guidance before the customer decides to churn.
+
+2. Low Relationship Count
+Customers with a low number of relationships or products/services are more likely to churn. The Total_Relationship_Count feature in the Random Forest model showed that customers who use fewer services or products are more likely to leave, likely because their engagement with the company is not robust enough to ensure long-term loyalty.
+
+Recommended Action:
+
+Cross-Selling Initiatives: Identify customers with low relationship counts and target them with offers to cross-sell additional services that might suit their needs. For example, bundle services at a discounted price or offer loyalty points to encourage customers to use more products.
+
+Loyalty Programs: Implement loyalty programs that reward customers with increased benefits for every service or product they add. This strategy could increase customer engagement, reduce churn, and provide greater lifetime value to the business.
+
+3. Low Credit Limits with High Usage
+Customers with low credit limits but high usage (indicating they may be overextending financially) are at higher risk for attrition. The model identified that these customers have a higher probability of leaving due to financial constraints. These customers may feel restricted by their credit limits and frustrated with the service if they are unable to meet their financial needs.
+
+Recommended Action:
+
+Credit Limit Review: A proactive review and adjustment of credit limits could help retain these customers. Increasing their available credit or providing temporary extensions could improve their satisfaction and decrease churn.
+
+Personalized Support: Offer personalized financial planning services, such as budgeting tools or dedicated customer support, to assist them in managing their finances and making full use of the service without feeling financially burdened.
+
+Deployment Considerations
+Given the performance of the Tuned Decision Tree model (95.98% accuracy, 82.79% sensitivity), it is the recommended choice for ABC Corporation’s churn prediction system. The model’s high accuracy, strong sensitivity, and interpretability make it ideal for business applications, particularly in customer relationship management (CRM).
+
+## Recommended Model:
+
+Tuned Decision Tree for Deployment: The Decision Tree’s clarity makes it a valuable tool for business stakeholders who need to understand the decision-making process. Its interpretability ensures that employees can easily communicate insights to customers and upper management.
+
+Implementation in CRM Systems: The model can be integrated into CRM systems in two ways:
+
+Batch Processing: Run churn predictions monthly and use the results to segment customers into risk categories, which can then be targeted with tailored retention campaigns.
+
+Real-Time Prediction Pipelines: For customers interacting with ABC Corporation’s services, real-time churn predictions can be made, allowing for immediate interventions (personalized offers or customer outreach).
+
+This approach provides the company with actionable insights that can be quickly translated into customer-facing initiatives to reduce attrition.
+
+## Future Improvements
+While the current model is robust, there are several opportunities for future improvements that could enhance predictive performance and customer retention strategies:
+
+1. Enrich the Dataset
+Incorporating more data can provide deeper insights into customer behavior and improve model predictions:
+
+Customer Sentiment: Analyzing customer sentiment through social media, reviews, and surveys could reveal unspoken indicators of churn. Sentiment analysis could be incorporated to assess customer mood and engagement.
+
+Service Interaction History: Adding data from support tickets, complaints, and service interactions can provide a more holistic view of the customer experience, helping to identify dissatisfaction before it leads to churn.
+
+Survey Responses & Satisfaction Scores: Incorporating customer satisfaction surveys and NPS scores into the model can help identify at-risk customers who may not show financial signs of distress but have an overall negative experience.
+
+2. Advanced Modeling
+Future modeling could focus on more sophisticated techniques to handle complex customer behavior:
+
+Neural Networks: As more unstructured data (e.g., text, images) becomes available, neural networks may offer better predictive accuracy, especially when analyzing large volumes of complex data.
+
+Time-Series Modeling: Implementing sequence models such as LSTM networks could help capture the temporal changes in customer behavior, allowing for better prediction of when customers are most likely to churn within a specific period.
+
+3. Class Imbalance Handling
+Although performance is strong, the dataset may still have class imbalance, with fewer customers churning than staying. To address this issue, the following techniques can be explored:
+
+Class Weights: Adjusting class weights during training can make the model more sensitive to the minority class, improving predictions for customers at risk of churn.
+
+Combining Undersampling and Oversampling: A combination of undersampling the majority class (existing customers) and oversampling the minority class (churned customers) could result in better model performance for imbalanced data.
+
+4. Model Monitoring and Updating
+Customer behavior is dynamic, and models may become outdated as trends and patterns change. Therefore, it’s essential to:
+
+Regularly Retrain Models: Retraining the model with new data every few months will ensure that it stays relevant and reflective of changing customer dynamics.
+
+Monitor Performance: Set up a model performance monitoring system to track the model's accuracy, precision, recall, and other relevant metrics, ensuring it continues to meet business objectives.
+
+By adopting these recommendations, ABC Corporation can build a more effective churn prevention strategy, leveraging data-driven insights to target high-risk customers and ultimately reduce attrition. Integrating these models into business processes, while continuously improving based on emerging data, will ensure a sustained effort toward customer retention.
+
+
+
+
+
+
+

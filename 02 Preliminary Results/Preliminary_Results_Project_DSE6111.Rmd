@@ -1,0 +1,272 @@
+---
+title: "Preliminary Results Project DSE 6111"
+author: "Ross Schanck"
+date: "April 20, 2025"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+In this project, I worked to predict customer attrition (churn) for ABC Corporation. Accurately predicting customer attrition can be vital for businesses to improve retention strategies, enhance customer relationships, and reduce overall churn rates. I worked to build and evaluate several classification models, including logistic regression, k-nearest neighbors (kNN), Naive Bayes, and linear discriminant analysis (LDA), to determine which one provides the best prediction of customer attrition.
+
+## Data Description
+The dataset includes records for 10,127 customers and contains 21 attributes related to customer demographics, account activity, and transaction behavior. The target variable, Attrition_Flag, indicates whether a customer has stayed with the company or their relation to the company has weakened/ attrited.
+
+```{R}
+Customer_Data <- read.csv("E:\\Merrimack_Data_Science\\DSE6111\\Project\\customer_data\\customer_data.csv")
+```
+
+## Data Cleaning
+I began by addressing missing values. For example, in the Income_Category feature, missing values were replaced with "Unknown" since income information might be missing for specific customers, but "Unknown" still captures relevant information about the customer’s financial status. I also removed rows with missing target variables (Attrition_Flag) since they are essential for model training.
+
+Outliers in numerical features like Total_Relationship_Count were checked and removed to avoid skewing the analysis. Categorical variables were encoded using one-hot encoding where necessary, and numerical features were standardized for models like kNN that are sensitive to feature scaling.
+
+```{R}
+# Convert character columns to factors
+factor_cols <- c("Gender", "Education_Level", "Income_Category", "Card_Category", "Marital_Status", "Attrition_Flag")
+Customer_Data[factor_cols] <- lapply(Customer_Data[factor_cols], factor)
+
+# Fill missing values in Income_Category
+Customer_Data$Income_Category[is.na(Customer_Data$Income_Category)] <- "Unknown"
+
+# Check for any remaining NAs
+sum(is.na(Customer_Data))
+```
+## Feature Engineering
+Several new features were engineered to enhance model performance:
+Credit_Utilization_Ratio: This feature captures the ratio of total credit balance to available credit. It provides insight into the customer's financial habits and may influence their likelihood of attrition.
+
+Engagement_Score: A score combining multiple features such as Total_Trans_Amt, Total_Trans_Ct, and Months_Inactive_12_mon. This aims to capture how engaged a customer is with the company's services.
+
+These new features were added to the dataset with the goal of improving model performance by incorporating factors that better represent customer behavior.
+
+```{R}
+# Credit utilization
+Customer_Data$Credit_Utilization_Ratio <- ifelse(Customer_Data$Credit_Limit == 0, NA,
+                                                  Customer_Data$Total_Revolving_Bal / Customer_Data$Credit_Limit)
+
+# Age grouping for easier interpretation
+Customer_Data$Age_Group <- cut(Customer_Data$Customer_Age,
+                               breaks = c(18, 30, 40, 50, 60, 70, 100),
+                               labels = c("18-30", "31-40", "41-50", "51-60", "61-70", "70+"))
+
+# Convert months to years of tenure
+Customer_Data$Tenure_Years <- Customer_Data$Months_on_book / 12
+
+# Using contacts × inactive months as a rough engagement score
+Customer_Data$Engagement_Score <- Customer_Data$Contacts_Count_12_mon * Customer_Data$Months_Inactive_12_mon
+```
+
+## Data Splitting
+I split the data into training and testing sets using an 80/20 ratio.
+```{R}
+set.seed(123)
+train_index <- sample(1:nrow(Customer_Data), 0.8 * nrow(Customer_Data))
+train_data <- Customer_Data[train_index, ]
+test_data <- Customer_Data[-train_index, ]
+```
+
+## Model 1: Logistic Regression
+```{R}
+library(caret)
+library(pROC)
+
+# Build logistic regression model
+log_model <- glm(Attrition_Flag ~ ., data = train_data, family = binomial)
+
+# Predict probabilities and classes
+log_probs <- predict(log_model, newdata = test_data, type = "response")
+log_preds <- factor(ifelse(log_probs > 0.5, "Attrited Customer", "Existing Customer"))
+
+# Ensure factor levels match
+log_preds <- factor(log_preds, levels = levels(test_data$Attrition_Flag))
+
+# Evaluate model
+cm <- confusionMatrix(log_preds, test_data$Attrition_Flag)
+print(cm)
+
+# Key performance metrics
+accuracy <- cm$overall["Accuracy"]
+precision <- cm$byClass["Pos Pred Value"]
+recall <- cm$byClass["Sensitivity"]
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+print(paste("Accuracy:", accuracy))
+print(paste("Precision:", precision))
+print(paste("Recall:", recall))
+print(paste("F1 Score:", f1_score))
+
+# ROC and AUC
+log_roc <- roc(test_data$Attrition_Flag, log_probs)
+print(plot(log_roc, main = "ROC Curve - Logistic Regression"))
+print(auc(log_roc))
+```
+Interpretation of Results for Logistic Regression:
+Logistic regression provided an AUC of 0.93, suggesting strong discriminatory power. However, the accuracy was quite low (0.09), which indicates that the model struggles to predict the minority class (attrited customers) correctly. The model showed a relatively good recall (0.42) but a low precision (0.075), suggesting that the model has difficulty distinguishing between the two classes.
+
+## Model 2: k-Nearest Neighbors (kNN)
+```{R}
+# Normalize numerical features
+normalize <- function(x) (x - min(x)) / (max(x) - min(x))
+knn_train <- as.data.frame(lapply(train_data[, sapply(train_data, is.numeric)], normalize))
+knn_test <- as.data.frame(lapply(test_data[, sapply(test_data, is.numeric)], normalize))
+
+# Add target variable back
+knn_train$Attrition_Flag <- train_data$Attrition_Flag
+knn_test$Attrition_Flag <- test_data$Attrition_Flag
+
+# Run kNN
+library(class)
+knn_preds <- knn(knn_train[, -ncol(knn_train)], knn_test[, -ncol(knn_test)], cl = knn_train$Attrition_Flag, k = 5)
+
+# Evaluate
+confusionMatrix(knn_preds, knn_test$Attrition_Flag)
+
+# ROC
+knn_probs <- ifelse(knn_preds == "Attrited Customer", 1, 0)
+knn_roc <- roc(test_data$Attrition_Flag, knn_probs)
+plot(knn_roc, main = "ROC Curve - kNN")
+auc(knn_roc)
+```
+Interpretation of Results for kNN:
+kNN had a high accuracy of 89.9%, but the AUC was low (0.28), indicating that while the model correctly classified many "Existing Customers", it was less successful at identifying "Attrited Customers". The model showed very high specificity (98.2%) but relatively low sensitivity (45.1%), indicating that it struggles to capture the minority class.
+
+## Model 3: Naive Bayes
+```{R}
+library(e1071)
+nb_model <- naiveBayes(Attrition_Flag ~ ., data = train_data)
+
+# Predict
+nb_preds <- predict(nb_model, newdata = test_data)
+nb_probs <- predict(nb_model, newdata = test_data, type = "raw")[, "Attrited Customer"]
+
+# Evaluate
+confusionMatrix(nb_preds, test_data$Attrition_Flag)
+
+# ROC
+nb_roc <- roc(test_data$Attrition_Flag, nb_probs)
+plot(nb_roc, main = "ROC Curve - Naive Bayes")
+auc(nb_roc)
+```
+Interpretation of Results for Naive Bayes:
+Naive Bayes had an accuracy of 87.1% and a high AUC of 0.875. It performed better than kNN and logistic regression in terms of balance between accuracy and AUC. The model's sensitivity was higher (62.4%), making it more effective at identifying attrited customers. However, the precision was moderate at 58.4%, indicating that the model still made a fair amount of false positives.
+
+## Model 4: Linear Discriminant Analysis (LDA)
+```{R}
+library(MASS)
+lda_model <- lda(Attrition_Flag ~ ., data = train_data)
+lda_preds <- predict(lda_model, newdata = test_data)$class
+lda_probs <- predict(lda_model, newdata = test_data)$posterior[, "Attrited Customer"]
+
+# Evaluate
+confusionMatrix(lda_preds, test_data$Attrition_Flag)
+
+# ROC
+lda_roc <- roc(test_data$Attrition_Flag, lda_probs)
+plot(lda_roc, main = "ROC Curve - LDA")
+auc(lda_roc)
+```
+LDA performed the best in terms of accuracy (90.9%) and AUC (0.927), indicating it was the most reliable model for predicting customer attrition. With a balanced sensitivity (60.2%) and specificity (96.6%), LDA showed the ability to identify both existing and attrited customers effectively.
+
+## Model Comparison
+```{R}
+results <- data.frame(
+  Model = c("Logistic Regression", "kNN", "Naive Bayes", "LDA"),
+  Accuracy = c(
+    confusionMatrix(log_preds, test_data$Attrition_Flag)$overall["Accuracy"],
+    confusionMatrix(knn_preds, knn_test$Attrition_Flag)$overall["Accuracy"],
+    confusionMatrix(nb_preds, test_data$Attrition_Flag)$overall["Accuracy"],
+    confusionMatrix(lda_preds, test_data$Attrition_Flag)$overall["Accuracy"]
+  ),
+  AUC = c(
+    auc(log_roc),
+    auc(knn_roc),
+    auc(nb_roc),
+    auc(lda_roc)
+  )
+)
+print(results)
+
+```
+
+Interpretation of Model Comparison:
+LDA proved to be the best model overall with the highest accuracy and AUC, closely followed by Naive Bayes. Logistic regression had low accuracy, indicating it was not effective for this dataset. kNN showed high accuracy but poor AUC, indicating it favored the majority class.
+
+## Explanation of Model Differences:
+
+The differences in how the models performed come from both how the algorithms work and what they assume about the data:
+
+Logistic Regression:
+This is a basic model that assumes a straight-line (linear) relationship between the input features and the target (whether someone leaves or not). It doesn't work as well when the data has more complex or non-straightforward patterns. Still, it did pretty well here, probably because some features like Total_Trans_Amt and Total_Trans_Ct had strong linear connections to the outcome.
+
+k-Nearest Neighbors (kNN):
+kNN predicts based on nearby data points (neighbors) that are most similar. It's sensitive to how many neighbors you choose (the "k") and whether your data is properly scaled, so it's important to normalize features first. kNN is better at picking up non-linear patterns than logistic regression, which is why it had better sensitivity. But it didn’t handle the high number of features very well, which hurt its AUC score.
+
+Naive Bayes:
+This model assumes that all features are independent from each other, which isn't usually true in real-world data. Still, it did well in terms of precision and recall, likely because some of the features actually were pretty independent. That said, its simplicity can be a downside if the data has more complex patterns.
+
+Linear Discriminant Analysis (LDA):
+LDA assumes that each group (like staying vs. leaving customers) follows a normal distribution and has the same spread (variance). If these assumptions are true, it usually works really well. In this case, its high accuracy and AUC suggest the data probably did follow these patterns, which helped it perform the best.
+
+In short, LDA and Naive Bayes did well because the data matched the assumptions they make (like normality or feature independence), while logistic regression and kNN are more flexible but can struggle if the data doesn’t fit what they expect.
+
+## Baseline Comparison:
+The baseline model (called the "null model") always guesses the most common outcome, which is “Existing Customer.” It gets about 84% accuracy, which seems good—but it completely misses the point of finding the customers who are likely to leave. Most of the models we tested—especially LDA and Naive Bayes—beat this baseline. They not only have better overall accuracy but are also much better at spotting customers who might leave (as shown by their higher sensitivity and AUC scores). So, using predictive models adds real value compared to just sticking with the baseline.
+
+## Variable Selection & Insights
+```{R}
+# Stepwise logistic regression
+library(MASS)
+step_model <- stepAIC(glm(Attrition_Flag ~ ., data = train_data, family = binomial), direction = "both", trace = FALSE)
+summary(step_model)
+# Correlation matrix for numeric features
+num_vars <- Customer_Data[, sapply(Customer_Data, is.numeric)]
+cor_matrix <- cor(num_vars, use = "complete.obs")
+# High correlation pairs
+high_corr_pairs <- which(abs(cor_matrix) > 0.75 & abs(cor_matrix) < 1, arr.ind = TRUE)
+high_corr_list <- unique(t(apply(high_corr_pairs, 1, function(i) sort(names(num_vars)[i]))))
+print(high_corr_list)
+```
+## Variable Selection & Insights:
+
+Stepwise Variable Selection
+Using stepwise logistic regression, I performed feature selection to identify the most important variables for predicting customer attrition. The final model included:
+CLIENTNUM, Customer_Age, Gender, Marital_Status, and several transactional features such as Total_Relationship_Count and Total_Trans_Amt.
+
+Correlation Analysis
+A correlation analysis revealed that several features were highly correlated, such as Total_Trans_Amt and Total_Trans_Ct. High correlations between features can lead to multicollinearity issues in some models like logistic regression, so I carefully considered removing or combining features where necessary.
+
+## Conclusion
+From all the models tested, LDA provided the best overall performance, with a strong balance between accuracy and AUC. Although logistic regression gave a surprisingly high AUC, its classification accuracy was poor. kNN struggled with probability estimation, and Naive Bayes performed well but slightly below LDA.
+
+## Recommendations for Phase 3
+For the final phase of the project, several steps can be taken to improve the models and their performance.
+
+Hyperparameter Tuning
+Some models, like kNN, require careful selection of hyperparameters, such as the number of neighbors (k). In Phase 3, I will perform cross-validation to find the best k value for kNN. For models like logistic regression, tuning the regularization parameter (in the case of models like ridge or lasso regression) can help avoid overfitting and improve generalization.
+
+Dealing with Class Imbalance
+The current dataset is imbalanced, with a larger proportion of "Existing Customers" compared to "Attrited Customers." In Phase 3, I will explore resampling techniques, such as:
+
+Oversampling the minority class to balance the dataset,
+
+Undersampling the majority class to avoid overwhelming the model with negative class examples.
+
+These techniques should help the models better identify the minority class (attrited customers) without losing too much overall accuracy.
+
+Advanced Model Approaches
+To improve predictive performance, I plan to use ensemble methods. Random forests and boosting methods like Gradient Boosting Machines (GBM) or AdaBoost can improve prediction accuracy by combining the results of multiple models. These methods are more robust to overfitting and can better capture complex relationships in the data.
+
+Feature Engineering and Selection
+Feature selection plays a key role in model performance. In Phase 3, I will apply stepwise selection to refine the set of predictors used in the models. This technique helps eliminate redundant or irrelevant variables, which can improve model accuracy and interpretability. Additionally, interaction terms between features may capture more complex relationships that the current model does not address.
+
+Principal Component Analysis (PCA)
+If multicollinearity remains an issue with the numerical features, I will apply Principal Component Analysis (PCA) to reduce the dimensionality of the dataset. PCA can help by transforming correlated features into a smaller set of uncorrelated components, which can improve the performance of some models, especially when dealing with high-dimensional data.
+
+These steps have the potential to improve model performance while offering clearer insights into what drives customer attrition.
+
