@@ -210,3 +210,10 @@ The tuned Decision Tree model can be deployed in:
 
 ## Conclusion
 This project demonstrates the effectiveness of machine learning models in predicting customer attrition. While ensemble methods achieved the highest predictive performance, interpretable models provide practical value for business deployment and decision-making.
+
+
+---
+
+## Author
+Ross Schanck  
+M.S. Data Science
